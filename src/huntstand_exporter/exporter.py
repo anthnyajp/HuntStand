@@ -340,7 +340,8 @@ def write_membership_matrix(all_rows: list[dict[str, Any]], out_path: str) -> No
     hunt_names = sorted({row.get("huntarea_name", "") for row in all_rows if row.get("huntarea_name")})
 
     # Build matrix with default "No"
-    matrix: dict[str, dict[str, str]] = {email: {hname: "No" for hname in hunt_names} for email in emails}
+    # Use dict.fromkeys for inner mapping to satisfy C420 (unnecessary dict comprehension)
+    matrix: dict[str, dict[str, str]] = {email: dict.fromkeys(hunt_names, "No") for email in emails}
 
     for row in all_rows:
         email = (row.get("email") or "").lower().strip()
