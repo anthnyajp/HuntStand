@@ -49,7 +49,7 @@ from urllib3.util.retry import Retry
 
 # optional .env loader (not required)
 try:
-    from dotenv import load_dotenv  # type: ignore
+    from dotenv import load_dotenv
 
     load_dotenv()
 except Exception:
@@ -57,7 +57,7 @@ except Exception:
 
 # TLS/CA
 try:
-    import certifi  # type: ignore
+    import certifi
 
     CERTIFI_AVAILABLE = True
 except Exception:
