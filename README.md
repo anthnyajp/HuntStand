@@ -37,6 +37,18 @@ $env:HUNTSTAND_CSRFTOKEN = "<csrftoken_from_browser>"
 huntstand-exporter --per-hunt
 ```
 
+### Shell Differences (PowerShell vs Bash)
+
+PowerShell uses `$env:VAR = "value"` while Bash uses `export VAR="value"`.
+
+| Purpose | PowerShell | Bash |
+|---------|------------|------|
+| Set sessionid | `$env:HUNTSTAND_SESSIONID = "abc123"` | `export HUNTSTAND_SESSIONID="abc123"` |
+| Set csrftoken | `$env:HUNTSTAND_CSRFTOKEN = "def456"` | `export HUNTSTAND_CSRFTOKEN="def456"` |
+| Run exporter | `huntstand-exporter` | `huntstand-exporter` |
+
+Environment cookies override values provided via `--cookies-file` if both are present (env > file > login fallback).
+
 ## Obtaining Cookies
 
 Use browser dev tools on <https://app.huntstand.com> while logged in:
@@ -53,19 +65,53 @@ Use browser dev tools on <https://app.huntstand.com> while logged in:
 }
 ```
 
-Run with: `python huntstand.py --cookies-file cookies.json`
+Run with: `huntstand-exporter --cookies-file cookies.json`
+
+You can also keep this as `cookies.example.json` in version control and copy to a real `cookies.json` locally (never commit real cookie values).
+
+### Using a .env File
+
+Create a `.env` file (not committed) to avoid retyping variables:
+
+```env
+HUNTSTAND_SESSIONID=abc123
+HUNTSTAND_CSRFTOKEN=def456
+HUNTSTAND_LOG_LEVEL=INFO
+```
+
+Then use a loader (already supported via `python-dotenv`) automatically when running the console script from within the project directory. If you move the `.env` file elsewhere, load manually:
+
+```powershell
+pip install python-dotenv  # already in dependencies, only if missing
+python -c "from dotenv import load_dotenv; load_dotenv(); import os; print(os.getenv('HUNTSTAND_SESSIONID'))"
+```
+
+### Order of Authentication Attempts
+
+1. Explicit environment variables
+2. Values from `--cookies-file`
+3. Username/password fallback (`HUNTSTAND_USER`, `HUNTSTAND_PASS`)
+4. Continue (some endpoints may fail) if none provided
 
 ## Fallback Login
 
-If cookies are not available:
+If cookies are not available (less reliable):
 
 ```powershell
 $env:HUNTSTAND_USER = "you@example.com"
 $env:HUNTSTAND_PASS = "hunter2"
-python huntstand.py
+huntstand-exporter
 ```
 
-The script will attempt both `login` and `username` fields; this endpoint can be flaky.
+The tool will attempt both `login` and `username` fields; this endpoint can be flaky. Prefer cookies.
+
+Bash equivalent:
+
+```bash
+export HUNTSTAND_USER="you@example.com"
+export HUNTSTAND_PASS="hunter2"
+huntstand-exporter
+```
 
 ## CLI Options
 
@@ -120,7 +166,17 @@ pytest --cov=huntstand_exporter --cov-report=html
 
 ## Environment Template
 
-See `.env.example` for suggested variables. Never commit real cookie/session values.
+Below is a suggested template you can copy into a local `.env` (do NOT commit real values):
+
+```env
+HUNTSTAND_SESSIONID=
+HUNTSTAND_CSRFTOKEN=
+HUNTSTAND_USER=
+HUNTSTAND_PASS=
+HUNTSTAND_LOG_LEVEL=INFO
+```
+
+`HUNTSTAND_USER` / `HUNTSTAND_PASS` are only used if cookies are absent.
 
 ## Responsible Use Notice
 
@@ -138,6 +194,10 @@ MIT — see `LICENSE`.
 ## Contributing
 
 See `CONTRIBUTING.md` for guidelines.
+
+## Deprecation Notice
+
+The legacy script `huntstand.py` is now a thin wrapper kept only for backward compatibility and will be removed in a future release. Please use the installed console command `huntstand-exporter`.
 
 ## Roadmap Ideas
 

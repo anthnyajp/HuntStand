@@ -1,6 +1,6 @@
 """Tests for data normalization utilities."""
 
-from huntstand import as_dict, json_or_list_to_objects
+from huntstand_exporter.exporter import as_dict, json_or_list_to_objects
 
 
 def test_as_dict():
