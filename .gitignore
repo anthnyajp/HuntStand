@@ -1,3 +1,50 @@
+
+#############################
+# HuntStand Exporter Git Ignore
+#############################
+
+# Environment / Secrets
+.env
+.env*
+.flaskenv*
+!.env.project
+!.env.vault
+cookies.json
+cookies.*.json
+
+# Python Artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+/.venv/
+venv/
+.Python
+build/
+dist/
+
+# Outputs (generated data)
+huntstand_members_detailed.csv
+huntstand_membership_matrix.csv
+huntstand_summary.json
+huntstand_per_hunt_csvs/
+
+# Test / Coverage
+.coverage
+coverage.xml
+htmlcov/
+
+# IDE / Editor
+.vscode/
+.idea/
+.ropeproject/
+
+# OS / Misc
+.DS_Store
+Thumbs.db
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
