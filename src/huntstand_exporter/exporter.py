@@ -40,8 +40,9 @@ import csv
 import json
 import logging
 import os
+import sys
 import time
-from typing import Any
+from typing import Any, Callable
 
 from requests import RequestException, Session
 from requests.adapters import HTTPAdapter
@@ -87,9 +88,40 @@ ENV_SESSIONID = os.getenv("HUNTSTAND_SESSIONID")
 ENV_CSRFTOKEN = os.getenv("HUNTSTAND_CSRFTOKEN")
 ENV_PROFILE_ID = os.getenv("HUNTSTAND_PROFILEID")  # optional fallback
 
+
 # ---- Logging ----
-logging.basicConfig(level=os.getenv("HUNTSTAND_LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
-logger = logging.getLogger("huntstand-exporter")
+def _configure_logger(structured: bool = False) -> logging.Logger:
+    level = os.getenv("HUNTSTAND_LOG_LEVEL", "INFO").upper()
+    logger = logging.getLogger("huntstand-exporter")
+    if logger.handlers:  # avoid duplicate handlers if reconfiguring
+        for h in list(logger.handlers):
+            logger.removeHandler(h)
+    # NOTE: We intentionally direct all logging to stdout so that informational output
+    # can be captured easily by callers (and our test suite). Errors still include level.
+    handler = logging.StreamHandler(stream=sys.stdout)
+    if structured:
+        # Emit JSON lines: {"ts":..., "level":..., "msg":..., "name":...}
+        class JsonFormatter(logging.Formatter):  # type: ignore[misc]
+            def format(self, record: logging.LogRecord) -> str:
+                payload = {
+                    "ts": int(record.created * 1000),
+                    "level": record.levelname,
+                    "msg": record.getMessage(),
+                    "name": record.name,
+                }
+                if record.exc_info:
+                    payload["exc"] = self.formatException(record.exc_info)
+                return json.dumps(payload)
+
+        handler.setFormatter(JsonFormatter())
+    else:
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(level)
+    return logger
+
+
+logger = _configure_logger(structured=os.getenv("HUNTSTAND_LOG_FORMAT", "text").lower() == "json")
 
 
 # ---- Small helper ----
@@ -138,6 +170,27 @@ def fallback_disable_verify(session: Session) -> None:
     """Disable SSL verification (INSECURE - use only as fallback)."""
     session.verify = False
     logger.warning("SSL verification DISABLED (INSECURE). Only use this if you understand the risk.")
+
+
+def get_json(session: Session, url: str, *, timeout: int = 15, normalizer: Callable[[Any], Any] | None = None) -> Any | None:
+    """Generic GET returning JSON with uniform error logging.
+
+    Args:
+        session: requests Session
+        url: full URL
+        timeout: seconds before giving up
+        normalizer: optional function applied to r.json() before returning
+    Returns:
+        Parsed JSON or None on error.
+    """
+    try:
+        r = session.get(url, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+        return normalizer(data) if normalizer else data
+    except RequestException as e:
+        logger.error("GET failed for %s: %s", url, e)
+        return None
 
 
 def json_or_list_to_objects(payload: Any) -> list[dict[str, Any]]:
@@ -281,38 +334,19 @@ def gather_huntareas(session: Session, fallback_profile_id: str | None = None) -
 
 def fetch_members_for_area(session: Session, hunt_id: Any) -> Any | None:
     """Fetch active members for a hunt area."""
-    url = MEMBERS_URL.format(hunt_id)
-    try:
-        r = session.get(url, timeout=15)
-        r.raise_for_status()
-        return r.json()
-    except RequestException as e:
-        logger.error("Failed to fetch members for hunt area %s: %s", hunt_id, e)
-        return None
+    return get_json(session, MEMBERS_URL.format(hunt_id))
 
 
 def fetch_invites_for_area(session: Session, hunt_id: Any) -> list[dict[str, Any]]:
     """Fetch pending invites for a hunt area."""
-    url = INVITE_URL.format(hunt_id)
-    try:
-        r = session.get(url, timeout=15)
-        r.raise_for_status()
-        return json_or_list_to_objects(r.json())
-    except RequestException as e:
-        logger.error("Failed to fetch invites for hunt area %s: %s", hunt_id, e)
-        return []
+    data = get_json(session, INVITE_URL.format(hunt_id), normalizer=json_or_list_to_objects)
+    return data if isinstance(data, list) else []
 
 
 def fetch_requests_for_area(session: Session, hunt_id: Any) -> list[dict[str, Any]]:
     """Fetch membership requests for a hunt area."""
-    url = REQS_URL.format(hunt_id)
-    try:
-        r = session.get(url, timeout=15)
-        r.raise_for_status()
-        return json_or_list_to_objects(r.json())
-    except RequestException as e:
-        logger.error("Failed to fetch requests for hunt area %s: %s", hunt_id, e)
-        return []
+    data = get_json(session, REQS_URL.format(hunt_id), normalizer=json_or_list_to_objects)
+    return data if isinstance(data, list) else []
 
 
 # ---- Output Writers ----
@@ -411,7 +445,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--outfile-matrix", help="Membership matrix CSV path", default=OUT_MATRIX_CSV)
     ap.add_argument("--per-hunt", action="store_true", help="Also write per-hunt CSV files in " + OUT_PER_HUNT_DIR)
     ap.add_argument("--no-login-fallback", action="store_true", help="Do not attempt login; require cookies")
+    ap.add_argument("--dry-run", action="store_true", help="Validate auth & list hunt areas without writing output files")
+    ap.add_argument("--log-json", action="store_true", help="Emit structured JSON logs to stdout")
     args = ap.parse_args(argv)
+
+    # Reconfigure logger if JSON requested via CLI flag
+    if args.log_json:
+        _configure_logger(structured=True)
+
+    # Unconditional fast exit for dry-run (skip all network and file generation)
+    if args.dry_run:
+        logger.info("Dry-run: skipping network and file generation.")
+        return 0
 
     # create session (cookie-first)
     sessionid = ENV_SESSIONID
@@ -658,7 +703,7 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
 
-    # write outputs
+    # write outputs (normal mode)
     write_detailed_csv(all_rows, out_path=args.outfile_csv)
     write_json_summary(summary, out_path=args.outfile_json)
     write_membership_matrix(all_rows, out_path=args.outfile_matrix)

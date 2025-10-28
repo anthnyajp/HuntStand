@@ -19,8 +19,8 @@ A CLI tool that exports HuntStand hunt area membership data (active members, inv
 
 ```powershell
 # 1. Clone
-git clone https://github.com/YOUR_USERNAME/huntstand-exporter.git
-cd huntstand-exporter
+git clone https://github.com/anthnyajp/HuntStand.git
+cd HuntStand
 
 # 2. (Optional) create virtual environment
 python -m venv .venv

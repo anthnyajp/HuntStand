@@ -5,8 +5,8 @@ Thanks for your interest in improving the HuntStand Membership Exporter!
 ## Development Setup
 
 ```powershell
-git clone https://github.com/YOUR_USERNAME/huntstand-exporter.git
-cd huntstand-exporter
+git clone https://github.com/anthnyajp/HuntStand.git
+cd HuntStand
 python -m venv .venv
 ./.venv/Scripts/Activate.ps1
 pip install -e ".[dev]"
