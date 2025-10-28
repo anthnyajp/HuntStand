@@ -12,6 +12,7 @@
 cookies.json
 cookies.*.json
 
+
 # Python Artifacts
 __pycache__/
 *.pyc

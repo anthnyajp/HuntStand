@@ -6,6 +6,8 @@ from .exporter import (
     as_dict,
     json_or_list_to_objects,
     main,
+    is_safe_id,
+    fetch_members_for_area,
 )
 
 __all__ = [
@@ -13,4 +15,6 @@ __all__ = [
     "as_dict",
     "json_or_list_to_objects",
     "main",
+    "is_safe_id",
+    "fetch_members_for_area",
 ]

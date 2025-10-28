@@ -1,6 +1,6 @@
 [project]
 name = "huntstand-exporter"
-version = "0.1.0"
+version = "0.2.0"
 description = "CLI tool to export HuntStand hunt area membership data (members, invites, requests) to CSV/JSON."
 authors = [ { name = "Anthony Pinto" } ]
 license = { file = "LICENSE" }
@@ -38,7 +38,8 @@ dev = [
   "pytest>=8.0.0",
   "ruff>=0.6.0",
   "mypy>=1.11.0",
-  "types-requests>=2.31.0"
+  "types-requests>=2.31.0",
+  "build>=1.0.0"
 ]
 
 [project.scripts]

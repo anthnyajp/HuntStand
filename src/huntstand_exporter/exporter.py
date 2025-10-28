@@ -42,11 +42,15 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 
 from requests import RequestException, Session
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import urllib3
+from urllib3.exceptions import InsecureRequestWarning
 
 # optional .env loader (not required)
 try:
@@ -75,7 +79,7 @@ MEMBERS_URL = f"{BASE_URL}/api/v1/clubmember/?huntarea_id={{}}"
 REQS_URL = f"{BASE_URL}/api/v1/membershiprequest/?huntarea={{}}"
 HUNTAREA_BY_PROFILE = f"{BASE_URL}/api/v1/huntarea/?profile_id={{}}"
 
-# Default outputs
+# Default output base names (timestamping now unconditional via internal naming policy)
 OUT_DETAILED_CSV = "huntstand_members_detailed.csv"
 OUT_JSON = "huntstand_summary.json"
 OUT_MATRIX_CSV = "huntstand_membership_matrix.csv"
@@ -101,7 +105,7 @@ def _configure_logger(structured: bool = False) -> logging.Logger:
     handler = logging.StreamHandler(stream=sys.stdout)
     if structured:
         # Emit JSON lines: {"ts":..., "level":..., "msg":..., "name":...}
-        class JsonFormatter(logging.Formatter):  # type: ignore[misc]
+        class JsonFormatter(logging.Formatter):
             def format(self, record: logging.LogRecord) -> str:
                 payload = {
                     "ts": int(record.created * 1000),
@@ -128,6 +132,30 @@ logger = _configure_logger(structured=os.getenv("HUNTSTAND_LOG_FORMAT", "text").
 def as_dict(obj: Any) -> dict[str, Any]:
     """Return obj if it's a dict, else {}. Avoids None.get(...) crashes."""
     return obj if isinstance(obj, dict) else {}
+
+
+def is_safe_id(val: Any) -> bool:
+    """Return True if val looks like a sane hunt area identifier.
+
+    Accepts ints or strings composed only of hex/digits and dashes (UUID-like) to reduce
+    accidental SSRF / path injection risk in formatted URLs.
+    """
+    if val is None:
+        return False
+    if isinstance(val, int):
+        return True
+    if isinstance(val, str):
+        val = val.strip()
+        return bool(val) and all(c in "0123456789abcdefABCDEF-" for c in val)
+    return False
+
+
+def ensure_parent_dir(out_path: str) -> None:
+    """Create parent directory for an output file (best-effort)."""
+    try:
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        logger.debug("Could not ensure parent directory for %s", out_path)
 
 
 # ---- HTTP helper utilities ----
@@ -169,6 +197,11 @@ def set_ca_bundle(session: Session) -> None:
 def fallback_disable_verify(session: Session) -> None:
     """Disable SSL verification (INSECURE - use only as fallback)."""
     session.verify = False
+    # Suppress noisy InsecureRequestWarning once we intentionally disable verification.
+    try:
+        urllib3.disable_warnings(InsecureRequestWarning)
+    except Exception:
+        logger.debug("Failed to suppress InsecureRequestWarning; continuing anyway.")
     logger.warning("SSL verification DISABLED (INSECURE). Only use this if you understand the risk.")
 
 
@@ -207,16 +240,22 @@ def json_or_list_to_objects(payload: Any) -> list[dict[str, Any]]:
 
 # ---- Authentication ----
 def create_session_from_cookies(sessionid: str | None, csrftoken: str | None) -> Session:
-    """Create authenticated session using cookies."""
+    """Create authenticated session using cookies.
+
+    Determines cookie domain from BASE_URL host component so alternate hosts work.
+    """
     s = make_session_with_retries()
     set_ca_bundle(s)
+    try:
+        domain = BASE_URL.split("//", 1)[1].split("/", 1)[0]
+    except Exception:
+        domain = "app.huntstand.com"
     if sessionid:
-        # domain should be app.huntstand.com; requests will send cookies when domain matches
-        s.cookies.set("sessionid", sessionid, domain="app.huntstand.com", path="/")
-        logger.info("Loaded sessionid cookie from environment.")
+        s.cookies.set("sessionid", sessionid, domain=domain, path="/")
+        logger.info("Loaded sessionid cookie from environment (domain=%s).", domain)
     if csrftoken:
-        s.cookies.set("csrftoken", csrftoken, domain="app.huntstand.com", path="/")
-        logger.info("Loaded csrftoken cookie from environment.")
+        s.cookies.set("csrftoken", csrftoken, domain=domain, path="/")
+        logger.info("Loaded csrftoken cookie from environment (domain=%s).", domain)
     return s
 
 
@@ -334,17 +373,26 @@ def gather_huntareas(session: Session, fallback_profile_id: str | None = None) -
 
 def fetch_members_for_area(session: Session, hunt_id: Any) -> Any | None:
     """Fetch active members for a hunt area."""
+    if not is_safe_id(hunt_id):
+        logger.error("Unsafe hunt_id provided to fetch_members_for_area: %r", hunt_id)
+        return None
     return get_json(session, MEMBERS_URL.format(hunt_id))
 
 
 def fetch_invites_for_area(session: Session, hunt_id: Any) -> list[dict[str, Any]]:
     """Fetch pending invites for a hunt area."""
+    if not is_safe_id(hunt_id):
+        logger.error("Unsafe hunt_id provided to fetch_invites_for_area: %r", hunt_id)
+        return []
     data = get_json(session, INVITE_URL.format(hunt_id), normalizer=json_or_list_to_objects)
     return data if isinstance(data, list) else []
 
 
 def fetch_requests_for_area(session: Session, hunt_id: Any) -> list[dict[str, Any]]:
     """Fetch membership requests for a hunt area."""
+    if not is_safe_id(hunt_id):
+        logger.error("Unsafe hunt_id provided to fetch_requests_for_area: %r", hunt_id)
+        return []
     data = get_json(session, REQS_URL.format(hunt_id), normalizer=json_or_list_to_objects)
     return data if isinstance(data, list) else []
 
@@ -353,6 +401,7 @@ def fetch_requests_for_area(session: Session, hunt_id: Any) -> list[dict[str, An
 def write_detailed_csv(rows: list[dict[str, Any]], out_path: str) -> None:
     """Write detailed CSV with all members, invites, and requests."""
     fieldnames = ["huntarea_id", "huntarea_name", "name", "email", "rank", "status", "date_joined"]
+    ensure_parent_dir(out_path)
     with open(out_path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
@@ -362,6 +411,7 @@ def write_detailed_csv(rows: list[dict[str, Any]], out_path: str) -> None:
 
 def write_json_summary(summary: dict[str, Any], out_path: str) -> None:
     """Write JSON summary with hunt area metadata."""
+    ensure_parent_dir(out_path)
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=4)
     logger.info("Wrote JSON summary: %s", out_path)
@@ -387,6 +437,7 @@ def write_membership_matrix(all_rows: list[dict[str, Any]], out_path: str) -> No
 
     # Write CSV
     fieldnames = ["email", *hunt_names]
+    ensure_parent_dir(out_path)
     with open(out_path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
@@ -416,6 +467,7 @@ def write_per_hunt_csvs(all_rows: list[dict[str, Any]]) -> None:
         )
         filename = os.path.join(OUT_PER_HUNT_DIR, f"hunt_{hid}_{safe_name}.csv")
         fieldnames = ["name", "email", "rank", "status", "date_joined"]
+        ensure_parent_dir(filename)
         with open(filename, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames)
             writer.writeheader()
@@ -440,22 +492,73 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--profile-id", help="Optional profile ID to fallback to /api/v1/huntarea/?profile_id=", default=ENV_PROFILE_ID
     )
-    ap.add_argument("--outfile-csv", help="Detailed CSV output path", default=OUT_DETAILED_CSV)
-    ap.add_argument("--outfile-json", help="JSON summary output path", default=OUT_JSON)
-    ap.add_argument("--outfile-matrix", help="Membership matrix CSV path", default=OUT_MATRIX_CSV)
-    ap.add_argument("--per-hunt", action="store_true", help="Also write per-hunt CSV files in " + OUT_PER_HUNT_DIR)
+    ap.add_argument("--per-hunt", action="store_true", help="Also write per-hunt CSV files (timestamped directory)")
     ap.add_argument("--no-login-fallback", action="store_true", help="Do not attempt login; require cookies")
-    ap.add_argument("--dry-run", action="store_true", help="Validate auth & list hunt areas without writing output files")
+    ap.add_argument("--dry-run", action="store_true", help="Show planned output paths and exit without network or file writes")
     ap.add_argument("--log-json", action="store_true", help="Emit structured JSON logs to stdout")
+    ap.add_argument(
+        "--output-dir",
+        help="Base directory for outputs (default: exports/)",
+        default=None,
+    )
+    ap.add_argument(
+        "--format",
+        choices=["all", "csv", "json"],
+        default="all",
+        help="Select outputs: all (default), csv (detailed + matrix [+ per-hunt]), json (summary only)",
+    )
     args = ap.parse_args(argv)
 
     # Reconfigure logger if JSON requested via CLI flag
     if args.log_json:
         _configure_logger(structured=True)
 
-    # Unconditional fast exit for dry-run (skip all network and file generation)
+    # Always timestamp outputs and place them under exports/ (or --output-dir if provided)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_dir: Path = Path(args.output_dir) if args.output_dir else Path("exports")
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    out_csv = str(base_dir / f"huntstand_members_detailed_{ts}.csv")
+    out_json = str(base_dir / f"huntstand_summary_{ts}.json")
+    out_matrix = str(base_dir / f"huntstand_membership_matrix_{ts}.csv")
+    if args.per_hunt:
+        import importlib
+        mod = importlib.import_module(__name__)
+        setattr(mod, "OUT_PER_HUNT_DIR", str(base_dir / f"huntstand_per_hunt_csvs_{ts}"))
+    debug_paths: list[str] = []
+    if args.format in ("all", "csv"):
+        debug_paths.append(out_csv)
+        debug_paths.append(out_matrix)
+        if args.per_hunt:
+            debug_paths.append(str(OUT_PER_HUNT_DIR))
+    if args.format in ("all", "json"):
+        debug_paths.append(out_json)
+    logger.debug(
+        "Outputs directory: %s | timestamp applied. Planned paths (%s): %s",
+        base_dir,
+        args.format,
+        ", ".join(debug_paths),
+    )
+
+    planned: list[str] = []
+    if args.format in ("all", "csv"):
+        planned.append(out_csv)
+        planned.append(out_matrix)
+        if args.per_hunt:
+            planned.append(str(OUT_PER_HUNT_DIR))
+    if args.format in ("all", "json"):
+        planned.append(out_json)
+
+    # Unconditional fast exit for dry-run (skip network & file generation entirely)
     if args.dry_run:
-        logger.info("Dry-run: skipping network and file generation.")
+        if planned:
+            logger.info(
+                "Dry-run: skipping network and file generation. Planned outputs (%s):\n%s",
+                args.format,
+                "\n".join(f" - {p}" for p in planned),
+            )
+        else:
+            logger.info("Dry-run: skipping network and file generation (no outputs selected).")
         return 0
 
     # create session (cookie-first)
@@ -515,25 +618,17 @@ def main(argv: list[str] | None = None) -> int:
     # Normalize club objects to contain at least huntarea_id and huntarea metadata
     normalized_clubs: list[dict[str, Any]] = []
     for c in clubs:
-        if not isinstance(c, dict):
-            logger.debug("Skipping non-dict huntarea entry: %r", c)
-            continue
-
-        if isinstance(c.get("huntarea"), dict):
-            # shape: {'huntarea_id': id, 'huntarea': {...}} (preferred)
-            hid = c.get("huntarea_id") or as_dict(c.get("huntarea")).get("id")
-            normalized_clubs.append({"huntarea_id": hid, "huntarea": as_dict(c.get("huntarea"))})
-            continue
-
-        if c.get("id") and c.get("name"):
-            # maybe direct huntarea dict
-            normalized_clubs.append({"huntarea_id": c.get("id"), "huntarea": c})
-            continue
-
-        # fallback keys safely
-        hid = c.get("huntarea_id") or c.get("id")
-        hmeta = c.get("huntarea") if isinstance(c.get("huntarea"), dict) else c if isinstance(c, dict) else {}
-        normalized_clubs.append({"huntarea_id": hid, "huntarea": as_dict(hmeta)})
+        if isinstance(c, dict):
+            hunt_dict = c.get("huntarea") if isinstance(c.get("huntarea"), dict) else None
+            if hunt_dict is not None:
+                hid = c.get("huntarea_id") or as_dict(hunt_dict).get("id")
+                normalized_clubs.append({"huntarea_id": hid, "huntarea": as_dict(hunt_dict)})
+            elif c.get("id") and c.get("name"):
+                normalized_clubs.append({"huntarea_id": c.get("id"), "huntarea": c})
+            else:
+                hid = c.get("huntarea_id") or c.get("id")
+                hmeta = hunt_dict or c
+                normalized_clubs.append({"huntarea_id": hid, "huntarea": as_dict(hmeta)})
 
     all_rows: list[dict[str, Any]] = []
     summary: dict[str, Any] = {"hunt_areas": []}
@@ -703,16 +798,22 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
 
-    # write outputs (normal mode)
-    write_detailed_csv(all_rows, out_path=args.outfile_csv)
-    write_json_summary(summary, out_path=args.outfile_json)
-    write_membership_matrix(all_rows, out_path=args.outfile_matrix)
-    if args.per_hunt:
-        write_per_hunt_csvs(all_rows)
+    # write outputs (filtered by --format)
+    generated: list[str] = []
+    if args.format in ("all", "csv"):
+        write_detailed_csv(all_rows, out_path=out_csv)
+        generated.append(out_csv)
+    if args.format in ("all", "json"):
+        write_json_summary(summary, out_path=out_json)
+        generated.append(out_json)
+    if args.format in ("all", "csv"):
+        write_membership_matrix(all_rows, out_path=out_matrix)
+        generated.append(out_matrix)
+        if args.per_hunt:
+            write_per_hunt_csvs(all_rows)
+            generated.append(str(OUT_PER_HUNT_DIR))
 
     logger.info(
-        "All done. Files generated:\n - %s\n - %s\n - %s", args.outfile_csv, args.outfile_json, args.outfile_matrix
+        "All done. Outputs generated (%s):\n%s", args.format, "\n".join(f" - {g}" for g in generated)
     )
-    if args.per_hunt:
-        logger.info("Per-hunt CSVs in: %s", OUT_PER_HUNT_DIR)
     return 0

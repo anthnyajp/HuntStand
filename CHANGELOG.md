@@ -6,9 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ## [Unreleased]
 
-- Planned: --dry-run flag
-- Planned: Structured JSON logging option
-- Planned: Additional tests for fallback/error paths
+- Planned: SQLite output option
+- Planned: Geodata/asset export endpoints
+- Planned: Parallel fetch for large hunt area counts
+- Planned: Warning when SSL fallback used (enhanced message with mitigation tips)
+- Planned: Rate limiting / polite backoff for large hunts
+
+## [0.2.0] - 2025-10-28
+
+### Removed
+
+- Legacy wrapper script `huntstand.py` (replaced fully by console entry point `huntstand-exporter`).
+- Deprecated flags: `--timestamped`, `--outfile-csv`, `--outfile-json`, `--outfile-matrix`.
+
+### Changed (Behavior)
+
+- Mandatory timestamped output policy documented (already enforced in 0.1.x, flags now removed).
+- Simplified CLI surface; clearer help texts.
+
+### Added (Docs)
+
+- Documentation updates reflecting removals.
+
+### Security (Guidance)
+
+- Reinforced guidance to prefer cookie-based auth.
 
 ## [0.1.0] - 2025-10-27
 
@@ -31,3 +53,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 - Encourages cookie-first authentication; warns when TLS verification disabled.
 
 [0.1.0]: https://github.com/anthnyajp/HuntStand/releases/tag/v0.1.0
+[0.2.0]: https://github.com/anthnyajp/HuntStand/releases/tag/v0.2.0

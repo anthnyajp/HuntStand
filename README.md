@@ -2,6 +2,8 @@
 
 A CLI tool that exports HuntStand hunt area membership data (active members, invites, join requests) into structured CSV and JSON files.
 
+> IMPORTANT: All output filenames are **always timestamped** and written under a base `exports/` directory (or a custom `--output-dir`). Legacy wrapper `huntstand.py` has been removed; use the `huntstand-exporter` console command.
+
 ## Features
 
 - Cookie-first authentication (recommended) using `sessionid` and `csrftoken`.
@@ -9,11 +11,11 @@ A CLI tool that exports HuntStand hunt area membership data (active members, inv
 - Robust retry logic for transient HTTP failures.
 - TLS verification with `certifi` and auto fallback to `verify=False` (with warning) if SSL errors occur.
 - Normalization of inconsistent API shapes (lists, `{objects: [...]}` wrappers, or dict maps).
-- Generates:
-  - Detailed CSV (`huntstand_members_detailed.csv`)
-  - Membership matrix CSV (`huntstand_membership_matrix.csv`)
-  - JSON summary (`huntstand_summary.json`)
-  - Optional per-hunt CSVs (`huntstand_per_hunt_csvs/`)
+- Generates (all timestamped now):
+  - Detailed CSV (`exports/huntstand_members_detailed_<YYYYMMDD_HHMMSS>.csv`)
+  - Membership matrix CSV (`exports/huntstand_membership_matrix_<YYYYMMDD_HHMMSS>.csv`)
+  - JSON summary (`exports/huntstand_summary_<YYYYMMDD_HHMMSS>.json`)
+  - Optional per-hunt CSVs (`exports/huntstand_per_hunt_csvs_<YYYYMMDD_HHMMSS>/`)
 
 ## Quick Start
 
@@ -33,7 +35,7 @@ pip install -e .
 $env:HUNTSTAND_SESSIONID = "<sessionid_from_browser>"
 $env:HUNTSTAND_CSRFTOKEN = "<csrftoken_from_browser>"
 
-# 5. Run exporter
+# 5. Run exporter (auto timestamped outputs in ./exports)
 huntstand-exporter --per-hunt
 ```
 
@@ -116,23 +118,47 @@ huntstand-exporter
 ## CLI Options
 
 ```text
---cookies-file <path>     # JSON file with sessionid/csrftoken
---profile-id <id>         # Fallback profile ID for hunt areas if /myprofile/ empty
---outfile-csv <path>      # Detailed CSV output path
---outfile-json <path>     # JSON summary output path
---outfile-matrix <path>   # Membership matrix CSV path
---per-hunt                # Also write per-hunt CSV files
---no-login-fallback       # Require cookies, do not attempt login
+--cookies-file <path>      JSON file with sessionid/csrftoken
+--profile-id <id>          Fallback profile ID for hunt areas if /myprofile/ empty
+--per-hunt                 Also write per-hunt CSV files (timestamped directory)
+--no-login-fallback        Require cookies; do not attempt login fallback
+--dry-run                  Show planned outputs; skip network and file writes
+--output-dir <dir>         Base directory for outputs (default: exports/)
+--format {all,csv,json}    Select outputs: all (default), csv, or json
+--log-json                 Emit structured JSON log lines
 ```
+
+Behavior details:
+
+- `--dry-run` lists planned timestamped output paths then exits 0 (no network/file I/O).
+- Timestamping is unconditional: filenames always include a `YYYYMMDD_HHMMSS` component.
+- `--output-dir` chooses/creates the base directory (defaults to `exports/`).
+- `--format=csv` writes detailed + matrix CSVs (plus per-hunt if `--per-hunt`).
+- `--format=json` writes only the JSON summary.
+- `--format=all` writes all CSVs and JSON.
+- `--log-json` emits structured JSON lines (schema: `{ts, level, msg, name}`).
 
 ## Output Files
 
-| File | Description |
-|------|-------------|
-| `huntstand_members_detailed.csv` | One row per active member, invite, request |
-| `huntstand_membership_matrix.csv` | Email vs hunt area status (Active/Invited/Requested/No) |
-| `huntstand_summary.json` | Aggregated metadata + samples per hunt area |
-| `huntstand_per_hunt_csvs/` | Optional per-area breakdown |
+| File Pattern | Description |
+|--------------|-------------|
+| `huntstand_members_detailed_<ts>.csv` | One row per active member, invite, request |
+| `huntstand_membership_matrix_<ts>.csv` | Email vs hunt area status (Active/Invited/Requested/No) |
+| `huntstand_summary_<ts>.json` | Aggregated metadata + samples per hunt area |
+| `huntstand_per_hunt_csvs_<ts>/` | Optional per-area breakdown (one CSV per hunt area) |
+
+All outputs are timestamped regardless of flags. Example (format=all, per-hunt):
+
+```text
+exports/
+  huntstand_members_detailed_20250101_123045.csv
+  huntstand_membership_matrix_20250101_123045.csv
+  huntstand_summary_20250101_123045.json
+  huntstand_per_hunt_csvs_20250101_123045/
+    hunt_<id>_<sanitized_name>.csv
+```
+
+Custom `--output-dir mydata` relocates these under `mydata/` with identical naming.
 
 ## Development
 
@@ -143,6 +169,9 @@ pip install -e ".[dev]"
 # Run with debug logging
 $env:HUNTSTAND_LOG_LEVEL = "DEBUG"
 huntstand-exporter --per-hunt
+
+# Example: JSON-only batch into custom directory
+huntstand-exporter --output-dir exports/batch1 --format json
 
 # Run linter
 ruff check src/ tests/
@@ -159,6 +188,9 @@ mypy src/huntstand_exporter/
 ```powershell
 # Run all tests
 pytest -v
+
+# Focus on new format flag behaviors
+pytest tests/test_format_flag.py -q
 
 # Run with coverage
 pytest --cov=huntstand_exporter --cov-report=html
@@ -195,9 +227,10 @@ MIT — see `LICENSE`.
 
 See `CONTRIBUTING.md` for guidelines.
 
-## Deprecation Notice
+## Deprecation & Removal
 
-The legacy script `huntstand.py` is now a thin wrapper kept only for backward compatibility and will be removed in a future release. Please use the installed console command `huntstand-exporter`.
+- Removed legacy wrapper script `huntstand.py` (use `huntstand-exporter`).
+- Removed deprecated flags: `--timestamped`, `--outfile-csv`, `--outfile-json`, `--outfile-matrix` (timestamping & internal naming policy are now unconditional).
 
 ## Roadmap Ideas
 

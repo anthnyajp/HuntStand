@@ -1,10 +1,10 @@
 # HuntStand Data Exporter - AI Coding Instructions
 
 ## Project Overview
-This is a **web scraping and data extraction tool** for the HuntStand hunting club management platform. The main script (`huntstand.py`) authenticates with HuntStand's web API and exports membership data across multiple hunt areas into structured CSV and JSON formats.
+This is a **web scraping and data extraction tool** for the HuntStand hunting club management platform. The primary implementation lives in `src/huntstand_exporter/exporter.py` and is exposed via the console command `huntstand-exporter`. It authenticates with HuntStand's web API and exports membership data across multiple hunt areas into structured CSV and JSON formats.
 
 ## Architecture & Data Flow
-- **Single-file CLI application** with sophisticated session management
+- **Package-based CLI application** (`huntstand_exporter`) with sophisticated session management
 - **Cookie-first authentication** (sessionid + csrftoken) with username/password fallback
 - **Multi-endpoint data aggregation**: Fetches from `/api/v1/myprofile/`, `/api/v1/clubmember/`, `/api/v1/membershipemailinvite/`, and `/api/v1/membershiprequest/`
 - **Resilient HTTP handling**: Built-in retries, SSL fallbacks, and graceful error handling
@@ -44,10 +44,12 @@ def json_or_list_to_objects(payload: Any) -> List[Dict[str, Any]]:
 - **Graceful degradation**: Missing fields default to empty strings rather than causing crashes
 
 ## Output File Structure
-- `huntstand_members_detailed.csv`: One row per person across all hunt areas
-- `huntstand_membership_matrix.csv`: Email-to-hunt-area matrix with Yes/No/Invited status
-- `huntstand_summary.json`: Complete API responses with metadata and sample data
-- `huntstand_per_hunt_csvs/`: Individual CSV files per hunt area (optional)
+All output filenames are timestamped (`_<YYYYMMDD_HHMMSS>` suffix) and placed under `exports/` (or `--output-dir`).
+
+- `huntstand_members_detailed_<ts>.csv`: One row per person across all hunt areas
+- `huntstand_membership_matrix_<ts>.csv`: Email-to-hunt-area matrix with Yes/No/Invited/Requested status
+- `huntstand_summary_<ts>.json`: Complete API responses with metadata and sample data
+- `huntstand_per_hunt_csvs_<ts>/`: Individual CSV files per hunt area (optional)
 
 ## External Dependencies
 The project includes **browser capture files** (PowerShell, cURL, fetch) showing real authentication patterns:
@@ -58,7 +60,7 @@ The project includes **browser capture files** (PowerShell, cURL, fetch) showing
 ## Development Workflow
 1. **Authentication setup**: Use browser dev tools to extract `sessionid` and `csrftoken` cookies
 2. **Environment variables**: Set `HUNTSTAND_SESSIONID` and `HUNTSTAND_CSRFTOKEN`
-3. **Run with logging**: `HUNTSTAND_LOG_LEVEL=DEBUG python huntstand.py`
+3. **Run with logging**: `HUNTSTAND_LOG_LEVEL=DEBUG huntstand-exporter`
 4. **Test outputs**: Verify CSV structure matches expected membership data
 
 ## Debugging & Testing
@@ -68,7 +70,7 @@ The project includes **browser capture files** (PowerShell, cURL, fetch) showing
 - **Missing data**: Empty names/emails are handled gracefully in CSV output
 
 ## Key Files to Understand
-- `huntstand.py`: Complete application logic with extensive inline documentation
+- `src/huntstand_exporter/exporter.py`: Complete application logic with extensive inline documentation
 - `requirements.txt`: Minimal dependencies (requests, certifi, python-dotenv, urllib3)
 - `huntstand_summary.json`: Example of actual API response structure
 - `huntstand_members_detailed.csv`: Example output format

@@ -23,16 +23,34 @@ def test_dry_run_exits_zero(log_format: str):
     result = subprocess.run(
         [sys.executable, "-m", "huntstand_exporter", "--dry-run"],
         cwd=str(PACKAGE_ROOT),
-        env=env,
+        env={**env, "PYTHONPATH": str(PACKAGE_ROOT / "src")},
         capture_output=True,
         text=True,
         timeout=20,
     )
     assert result.returncode == 0
-    # Should not create output files
-    assert not Path("huntstand_members_detailed.csv").exists()
-    assert not Path("huntstand_membership_matrix.csv").exists()
-    assert not Path("huntstand_summary.json").exists()
+    # Extract planned output paths from dry-run listing and assert they were not created.
+    planned_paths = []
+    for raw in result.stdout.splitlines():
+        line = raw.strip()
+        # Handle JSON log format lines by extracting the multiline message
+        if line.startswith("{"):
+            try:
+                import json as _json
+                payload = _json.loads(line)
+                msg = payload.get("msg", "")
+                for mline in msg.splitlines():
+                    mline = mline.strip()
+                    if mline.startswith("-"):
+                        planned_paths.append(Path(mline[1:].strip()))
+            except Exception:
+                pass
+        elif line.startswith("-"):
+            planned_paths.append(Path(line[1:].strip()))
+    # We expect at least one planned path (csv, matrix, json)
+    assert planned_paths, f"No planned paths parsed from output: {result.stdout}"
+    for p in planned_paths:
+        assert not p.exists(), f"Dry-run should not create file: {p}"
     # Log format check (rudimentary)
     if log_format == "json":
         # Expect lines that parse as JSON
