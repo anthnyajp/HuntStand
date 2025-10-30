@@ -1,6 +1,0 @@
-email,huntarea_id,expected_role,found,actual_role,status,notes
-john.doe@example.com,7308893,member,No,,missing,Member not found in hunt area
-jane.smith@example.com,7308893,member,No,,missing,Member not found in hunt area
-admin@example.com,7308893,admin,No,,missing,Member not found in hunt area
-viewer@example.com,7308911,view,No,,missing,Member not found in hunt area
-failed@example.com,7308911,member,No,,skipped,"Original status was 400, not verified"
