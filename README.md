@@ -17,6 +17,58 @@ A CLI tool that exports HuntStand hunt area membership data (active members, inv
   - JSON summary (`exports/huntstand_summary_<YYYYMMDD_HHMMSS>.json`)
   - Optional per-hunt CSVs (`exports/huntstand_per_hunt_csvs_<YYYYMMDD_HHMMSS>/`)
 
+### New: Add Members Command
+
+The companion command `huntstand-add-members` lets you bulk invite/add emails to hunt areas based on CSV inputs.
+
+Input CSV files (single-column, header optional):
+
+- `members.csv` — standard member emails
+- `admin.csv` — admin emails
+- `view_only.csv` — view-only emails
+- `huntareas.csv` — hunt area IDs (numeric or UUID-like)
+
+Basic usage:
+
+```powershell
+# Dry-run (shows planned operations; no network calls)
+huntstand-add-members --dry-run
+
+# Import only member + admin roles
+huntstand-add-members --roles member admin
+
+# Custom file paths
+huntstand-add-members --members-file data/members.csv --admin-file data/admins.csv --huntareas-file data/huntareas.csv
+```
+
+CLI options:
+
+```text
+--cookies-file <path>     JSON file with sessionid/csrftoken (overridden by env)
+--members-file <path>     Members emails CSV (default members.csv)
+--admin-file <path>       Admin emails CSV (default admin.csv)
+--view-file <path>        View-only emails CSV (default view_only.csv)
+--huntareas-file <path>   Hunt area IDs CSV (default huntareas.csv)
+--roles <list>            Subset of roles to import (member/admin/view); default member
+--dry-run                 Show planned additions and exit (no network)
+--retries <int>           Retries for transient errors (default 3)
+--backoff <float>         Base backoff seconds (default 1.0)
+--delay <float>           Delay between successful calls (default 0.25s)
+--no-login-fallback       Do not attempt login fallback; require cookies
+--output-dir <dir>        Directory for result CSV (default exports/)
+--log-json                Emit structured JSON logs
+```
+
+Output:
+
+- `exports/members_added_results_<YYYYMMDD_HHMMSS>.csv` with columns: `email,huntarea_id,role,status_code,response`
+
+Notes:
+
+- Responses longer than 500 chars are truncated for readability.
+- Dry-run prints the total planned operations and sample entries (first 20).
+- The command uses the same cookie-first, login-fallback pattern as the exporter.
+
 ## Quick Start
 
 ```powershell
@@ -231,6 +283,7 @@ See `CONTRIBUTING.md` for guidelines.
 
 - Removed legacy wrapper script `huntstand.py` (use `huntstand-exporter`).
 - Removed deprecated flags: `--timestamped`, `--outfile-csv`, `--outfile-json`, `--outfile-matrix` (timestamping & internal naming policy are now unconditional).
+- Added new `huntstand-add-members` bulk invitation/role assignment command in 0.3.0.
 
 ## Roadmap Ideas
 

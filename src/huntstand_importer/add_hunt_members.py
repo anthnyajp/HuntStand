@@ -9,9 +9,9 @@ from dotenv import load_dotenv
 # ----------------------------
 # Config defaults
 # ----------------------------
-RETRIES = 3                # Number of retries on 429/5xx
-BASE_BACKOFF = 1.0         # Seconds; doubles each retry (1s, 2s, 4s…)
-DELAY_BETWEEN_CALLS = 0.25 # Seconds between calls
+RETRIES = 3                 # Number of retries on 429/5xx
+BASE_BACKOFF = 1.0          # Seconds; doubles each retry (1s, 2s, 4s…)
+DELAY_BETWEEN_CALLS = 0.25  # Seconds between calls
 
 # Role toggles
 IMPORT_ROLES = {

@@ -12,6 +12,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 - Planned: Warning when SSL fallback used (enhanced message with mitigation tips)
 - Planned: Rate limiting / polite backoff for large hunts
 
+## [0.3.0] - 2025-10-28
+
+### Added (Members Import Feature)
+
+- New `huntstand-add-members` command for bulk adding/inviting emails to hunt areas using CSV input files (members/admin/view_only/huntareas).
+- Dry-run mode for new command showing planned operations without network calls.
+- Timestamped results CSV `members_added_results_<ts>.csv` summarizing status codes and truncated responses.
+
+### Changed (Version)
+
+- Project version bumped to 0.3.0 for feature addition.
+
+### Security / Guidance (Auth)
+
+- Reiterated cookie-first authentication pattern for new command; login fallback remains optional and potentially flaky.
+
 ## [0.2.0] - 2025-10-28
 
 ### Removed

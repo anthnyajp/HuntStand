@@ -1,6 +1,6 @@
 [project]
 name = "huntstand-exporter"
-version = "0.2.0"
+version = "0.3.0"
 description = "CLI tool to export HuntStand hunt area membership data (members, invites, requests) to CSV/JSON."
 authors = [ { name = "Anthony Pinto" } ]
 license = { file = "LICENSE" }
@@ -44,6 +44,7 @@ dev = [
 
 [project.scripts]
 huntstand-exporter = "huntstand_exporter.exporter:main"
+huntstand-add-members = "huntstand_exporter.add_members:main"
 
 [build-system]
 requires = ["setuptools>=68.0.0", "wheel"]
