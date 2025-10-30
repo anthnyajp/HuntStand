@@ -7,10 +7,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 ## [Unreleased]
 
 - Planned: SQLite output option
-- Planned: Geodata/asset export endpoints
+- Planned: Rich geodata export (polylines / polygons) beyond basic stands/cameras
 - Planned: Parallel fetch for large hunt area counts
 - Planned: Warning when SSL fallback used (enhanced message with mitigation tips)
 - Planned: Rate limiting / polite backoff for large hunts
+
+## [0.3.2] - 2025-10-30
+
+### Added (0.3.2 Assets Export)
+
+### Added (Assets Export)
+
+- New `--include-assets` flag for `huntstand-exporter` to collect stands/cameras (and future generic assets) per hunt area.
+- Writes `huntstand_assets_detailed_<ts>.csv` with columns: `huntarea_id,huntarea_name,asset_type,asset_id,name,subtype,latitude,longitude,created,updated,last_activity,owner_email,visibility`.
+- JSON summary now includes `counts.assets` and `assets_sample` when assets are fetched.
+- Defensive multi-endpoint probing (`/api/v1/stand/?huntarea_id=`, `/api/v1/camera/?huntarea_id=`, fallback `/api/v1/asset/?huntarea_id=`) — failures logged at DEBUG and skipped without aborting export.
+- Normalization handles varied key naming (lat/lon vs location dict, name/title/label, public/shared flags).
+
+### Tests
+
+- Added `tests/test_assets.py` covering normalization logic and safe ID rejection.
+
+### Documentation Update
+
+- README updated with new flag and output file description.
+
+### Version
+
+- Project version bumped to 0.3.2.
+
+## [0.3.1] - 2025-10-30
+
+### Added (Verification)
+
+- New `--verify-results` flag for `huntstand-add-members` to validate that member additions were successful.
+- Verification fetches current members/invites from hunt areas and compares against expected additions.
+- Timestamped verification report CSV `members_verification_<ts>.csv` with status: verified/missing/role_mismatch/error/skipped.
+- Exit code 1 if verification finds any issues (missing members, role mismatches, or errors).
 
 ## [0.3.0] - 2025-10-28
 

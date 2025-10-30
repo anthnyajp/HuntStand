@@ -71,6 +71,8 @@ RETRIABLE_STATUSES = {429, 500, 502, 503, 504, 522}
 DEFAULT_BACKOFF = 1.0
 DEFAULT_RETRIES = 3
 API_SHARE_URL = f"{BASE_URL}/api/v2/huntarea/share/"
+MEMBERS_URL = f"{BASE_URL}/api/v1/clubmember/?huntarea_id={{}}"
+INVITES_URL = f"{BASE_URL}/api/v1/membershipemailinvite/?huntarea={{}}"
 
 
 def _configure_logger(structured: bool = False) -> logging.Logger:
@@ -127,7 +129,7 @@ def create_session(sessionid: str | None, csrftoken: str | None) -> requests.Ses
         logger.info("Loaded sessionid cookie (domain=%s)", domain)
     if csrftoken:
         s.cookies.set("csrftoken", csrftoken, domain=domain, path="/")
-        logger.info("Loaded csrftoken cookie (domain=%s)")
+        logger.info("Loaded csrftoken cookie (domain=%s)", domain)
     return s
 
 
@@ -227,6 +229,194 @@ def plan_additions(emails_by_role: dict[str, list[str]], huntareas: list[str]) -
     return plans
 
 
+@dataclass
+class VerificationResult:
+    email: str
+    huntarea_id: str
+    expected_role: str
+    found: bool
+    actual_role: str | None
+    status: str  # "verified", "missing", "role_mismatch", "error"
+    notes: str
+
+    def as_row(self) -> dict[str, Any]:
+        return {
+            "email": self.email,
+            "huntarea_id": self.huntarea_id,
+            "expected_role": self.expected_role,
+            "found": "Yes" if self.found else "No",
+            "actual_role": self.actual_role or "",
+            "status": self.status,
+            "notes": self.notes,
+        }
+
+
+def fetch_hunt_area_members(session: requests.Session, huntarea_id: str) -> dict[str, str]:
+    """Fetch current members and invites for a hunt area, return {email: role} mapping."""
+    members_map: dict[str, str] = {}
+
+    # Fetch active members
+    try:
+        resp = session.get(MEMBERS_URL.format(huntarea_id), timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Handle different response formats
+        if isinstance(data, dict) and "objects" in data:
+            members_list = data["objects"]
+        elif isinstance(data, list):
+            members_list = data
+        else:
+            members_list = []
+
+        for m in members_list:
+            if isinstance(m, dict):
+                email = (m.get("email") or "").strip().lower()
+                # Try to get rank from member object
+                rank_obj = m.get("rank")
+                if isinstance(rank_obj, dict):
+                    role = rank_obj.get("name", "member")
+                else:
+                    role = str(rank_obj or "member")
+                if email:
+                    members_map[email] = role.lower()
+    except Exception as e:
+        logger.debug("Error fetching members for hunt area %s: %s", huntarea_id, e)
+
+    # Fetch pending invites
+    try:
+        resp = session.get(INVITES_URL.format(huntarea_id), timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if isinstance(data, dict) and "objects" in data:
+            invites_list = data["objects"]
+        elif isinstance(data, list):
+            invites_list = data
+        else:
+            invites_list = []
+
+        for inv in invites_list:
+            if isinstance(inv, dict):
+                email = (inv.get("email") or "").strip().lower()
+                rank_obj = inv.get("rank")
+                if isinstance(rank_obj, dict):
+                    role = rank_obj.get("name", "member")
+                else:
+                    role = str(rank_obj or "member")
+                if email:
+                    members_map[email] = role.lower()
+    except Exception as e:
+        logger.debug("Error fetching invites for hunt area %s: %s", huntarea_id, e)
+
+    return members_map
+
+
+def verify_additions(session: requests.Session, results_csv_path: str) -> list[VerificationResult]:
+    """Read results CSV and verify each successful addition exists in hunt area."""
+    verifications: list[VerificationResult] = []
+
+    try:
+        with open(results_csv_path, newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                email = row.get("email", "").strip().lower()
+                huntarea_id = row.get("huntarea_id", "").strip()
+                expected_role = row.get("role", "").strip().lower()
+                status_code = row.get("status_code", "")
+
+                # Only verify successful additions (2xx status codes)
+                try:
+                    if not status_code.isdigit() or not (200 <= int(status_code) < 300):
+                        verifications.append(VerificationResult(
+                            email=email,
+                            huntarea_id=huntarea_id,
+                            expected_role=expected_role,
+                            found=False,
+                            actual_role=None,
+                            status="skipped",
+                            notes=f"Original status was {status_code}, not verified"
+                        ))
+                        continue
+                except (ValueError, TypeError):
+                    verifications.append(VerificationResult(
+                        email=email,
+                        huntarea_id=huntarea_id,
+                        expected_role=expected_role,
+                        found=False,
+                        actual_role=None,
+                        status="skipped",
+                        notes=f"Invalid status code: {status_code}"
+                    ))
+                    continue
+
+                # Fetch current members for this hunt area
+                try:
+                    members_map = fetch_hunt_area_members(session, huntarea_id)
+
+                    if email in members_map:
+                        actual_role = members_map[email]
+                        if actual_role == expected_role:
+                            verifications.append(VerificationResult(
+                                email=email,
+                                huntarea_id=huntarea_id,
+                                expected_role=expected_role,
+                                found=True,
+                                actual_role=actual_role,
+                                status="verified",
+                                notes="Member found with correct role"
+                            ))
+                        else:
+                            verifications.append(VerificationResult(
+                                email=email,
+                                huntarea_id=huntarea_id,
+                                expected_role=expected_role,
+                                found=True,
+                                actual_role=actual_role,
+                                status="role_mismatch",
+                                notes=f"Expected {expected_role}, found {actual_role}"
+                            ))
+                    else:
+                        verifications.append(VerificationResult(
+                            email=email,
+                            huntarea_id=huntarea_id,
+                            expected_role=expected_role,
+                            found=False,
+                            actual_role=None,
+                            status="missing",
+                            notes="Member not found in hunt area"
+                        ))
+                except Exception as e:
+                    verifications.append(VerificationResult(
+                        email=email,
+                        huntarea_id=huntarea_id,
+                        expected_role=expected_role,
+                        found=False,
+                        actual_role=None,
+                        status="error",
+                        notes=f"Verification error: {str(e)[:100]}"
+                    ))
+
+                time.sleep(0.2)  # Gentle rate limiting during verification
+
+    except FileNotFoundError:
+        logger.error("Results CSV not found: %s", results_csv_path)
+    except Exception as e:
+        logger.error("Error reading results CSV: %s", e)
+
+    return verifications
+
+
+def write_verification_csv(rows: list[VerificationResult], out_path: Path) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=["email", "huntarea_id", "expected_role", "found", "actual_role", "status", "notes"])
+        writer.writeheader()
+        for r in rows:
+            writer.writerow(r.as_row())
+    logger.info("Wrote verification CSV: %s (%d rows)", out_path, len(rows))
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(prog="huntstand-add-members", description="Add members to HuntStand hunt areas from CSV lists")
     ap.add_argument("--cookies-file", help="JSON file containing sessionid/csrftoken", default=None)
@@ -236,6 +426,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--huntareas-file", default="huntareas.csv", help="CSV file of hunt area IDs")
     ap.add_argument("--roles", nargs="+", choices=["member", "admin", "view"], default=["member"], help="Roles to import (subset of member/admin/view)")
     ap.add_argument("--dry-run", action="store_true", help="Show planned additions and exit without network calls")
+    ap.add_argument("--verify-results", metavar="CSV_PATH", help="Verify additions from a previous results CSV file")
     ap.add_argument("--log-json", action="store_true", help="Emit structured JSON logs to stdout")
     ap.add_argument("--retries", type=int, default=DEFAULT_RETRIES, help="Retries for transient errors (default 3)")
     ap.add_argument("--backoff", type=float, default=DEFAULT_BACKOFF, help="Base backoff seconds (default 1.0)")
@@ -248,15 +439,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.log_json:
-        _configure_logger(structured=True)
+        global logger
+        logger = _configure_logger(structured=True)
 
     # Load cookies first, possibly overriding env
     sessionid = ENV_SESSIONID
     csrftoken = ENV_CSRFTOKEN
     if args.cookies_file:
         sidf, csrff = load_cookies_file(args.cookies_file)
-        sessionid = sessionid or sidf
-        csrftoken = csrftoken or csrff
+        sessionid = sidf or sessionid
+        csrftoken = csrff or csrftoken
 
     session = create_session(sessionid, csrftoken)
 
@@ -283,6 +475,36 @@ def main(argv: list[str] | None = None) -> int:
                 logger.error("Login fallback raised: %s", e)
         else:
             logger.warning("No session cookie and no credentials configured; calls may fail.")
+
+    # Verification mode: validate previous results
+    if args.verify_results:
+        logger.info("Verification mode: checking results from %s", args.verify_results)
+        verifications = verify_additions(session, args.verify_results)
+
+        # Count statuses
+        verified = sum(1 for v in verifications if v.status == "verified")
+        missing = sum(1 for v in verifications if v.status == "missing")
+        role_mismatch = sum(1 for v in verifications if v.status == "role_mismatch")
+        errors = sum(1 for v in verifications if v.status == "error")
+        skipped = sum(1 for v in verifications if v.status == "skipped")
+
+        logger.info("Verification summary: %d verified, %d missing, %d role mismatch, %d errors, %d skipped",
+                    verified, missing, role_mismatch, errors, skipped)
+
+        # Write verification report
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = Path(args.output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / f"members_verification_{ts}.csv"
+        write_verification_csv(verifications, out_file)
+
+        # Return non-zero if any issues found
+        if missing > 0 or role_mismatch > 0 or errors > 0:
+            logger.warning("Verification found issues. Check %s for details.", out_file)
+            return 1
+
+        logger.info("Verification complete. All additions confirmed.")
+        return 0
 
     # Load CSV data
     emails_by_role: dict[str, list[str]] = {
@@ -328,4 +550,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())
+    sys.exit(main())

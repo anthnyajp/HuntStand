@@ -24,6 +24,7 @@ venv/
 .Python
 build/
 dist/
+huntstand_har.txt
 
 # Outputs (generated data)
 huntstand_members_detailed.csv

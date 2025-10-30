@@ -79,11 +79,45 @@ MEMBERS_URL = f"{BASE_URL}/api/v1/clubmember/?huntarea_id={{}}"
 REQS_URL = f"{BASE_URL}/api/v1/membershiprequest/?huntarea={{}}"
 HUNTAREA_BY_PROFILE = f"{BASE_URL}/api/v1/huntarea/?profile_id={{}}"
 
+# Candidate asset endpoints (observed / inferred from HAR patterns and common REST naming).
+# We attempt each and treat non-200 / malformed responses as empty. This defensive list
+# lets the tool continue working even if some endpoints change or are unavailable.
+ASSET_ENDPOINT_CANDIDATES: list[tuple[str, str]] = [
+    ("stand", f"{BASE_URL}/api/v1/stand/?huntarea_id={{}}"),
+    ("camera", f"{BASE_URL}/api/v1/camera/?huntarea_id={{}}"),
+    ("trailcam", f"{BASE_URL}/api/v1/trailcam/?huntarea={{}}"),  # observed in HAR (uses 'huntarea' param)
+    ("blind", f"{BASE_URL}/api/v1/blind/?huntarea_id={{}}"),
+    ("feeder", f"{BASE_URL}/api/v1/feeder/?huntarea_id={{}}"),
+    ("foodplot", f"{BASE_URL}/api/v1/foodplot/?huntarea_id={{}}"),
+    ("waypoint", f"{BASE_URL}/api/v1/waypoint/?huntarea_id={{}}"),
+    ("trail", f"{BASE_URL}/api/v1/scouttrail/?huntarea_id={{}}"),  # speculative scouting trail
+    # Fallback generic patterns (some deployments use 'asset' aggregate endpoints)
+    ("asset", f"{BASE_URL}/api/v1/asset/?huntarea_id={{}}"),
+]
+
+# Environment-driven endpoint augmentation: HUNTSTAND_ASSET_ENDPOINTS="type:url_template,type2:url_template2"
+_extra_assets_env = os.getenv("HUNTSTAND_ASSET_ENDPOINTS", "").strip()
+if _extra_assets_env:
+    for part in _extra_assets_env.split(","):
+        if not part:
+            continue
+        if ":" not in part:
+            continue
+        atype, urltmpl = part.split(":", 1)
+        atype = atype.strip()
+        urltmpl = urltmpl.strip()
+        if atype and urltmpl:
+            ASSET_ENDPOINT_CANDIDATES.append((atype, urltmpl))
+
+# Active endpoints (may be reduced by dynamic probing)
+ACTIVE_ASSET_ENDPOINTS: list[tuple[str, str]] = list(ASSET_ENDPOINT_CANDIDATES)
+
 # Default output base names (timestamping now unconditional via internal naming policy)
 OUT_DETAILED_CSV = "huntstand_members_detailed.csv"
 OUT_JSON = "huntstand_summary.json"
 OUT_MATRIX_CSV = "huntstand_membership_matrix.csv"
 OUT_PER_HUNT_DIR = "huntstand_per_hunt_csvs"
+OUT_ASSETS_CSV = "huntstand_assets_detailed.csv"  # written only when --include-assets flag used
 
 # ---- Credentials / cookies via environment ----
 ENV_USER = os.getenv("HUNTSTAND_USER")
@@ -449,6 +483,294 @@ def write_membership_matrix(all_rows: list[dict[str, Any]], out_path: str) -> No
     logger.info("Wrote membership matrix with statuses: %s (%d rows)", out_path, len(emails))
 
 
+def write_assets_csv(asset_rows: list[dict[str, Any]], out_path: str) -> None:
+    """Write assets (stands / cameras / generic) CSV.
+
+    Columns chosen for broad usefulness; absent fields are left blank.
+    """
+    fieldnames = [
+        "huntarea_id",
+        "huntarea_name",
+        "asset_type",
+        "asset_id",
+        "name",
+        "subtype",
+        "latitude",
+        "longitude",
+        "created",
+        "updated",
+        "last_activity",
+        "owner_email",
+        "visibility",
+    ]
+    ensure_parent_dir(out_path)
+    with open(out_path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in asset_rows:
+            writer.writerow({k: r.get(k, "") for k in fieldnames})
+    logger.info("Wrote assets CSV: %s (%d rows)", out_path, len(asset_rows))
+
+
+def _extract_lat_lon(obj: dict[str, Any]) -> tuple[str, str]:
+    """Try several patterns to extract latitude / longitude as strings."""
+    lat = obj.get("lat") or obj.get("latitude")
+    lon = obj.get("lon") or obj.get("longitude")
+    if not lat or not lon:
+        loc = obj.get("location") if isinstance(obj.get("location"), dict) else None
+        if isinstance(loc, dict):
+            lat = lat or loc.get("lat") or loc.get("latitude")
+            lon = lon or loc.get("lon") or loc.get("longitude")
+    return str(lat or ""), str(lon or "")
+
+
+def _normalize_asset(raw: dict[str, Any], asset_type: str, huntarea_id: Any, huntarea_name: str) -> dict[str, Any]:
+    """Produce a normalized asset dict.
+
+    Defensive: never assume keys exist; convert values to simple scalars.
+    """
+    aid = raw.get("id") or raw.get("asset_id") or raw.get("uuid") or ""
+    name = (
+        raw.get("name")
+        or raw.get("title")
+        or raw.get("label")
+        or raw.get("device_name")
+        or raw.get("camera_name")
+        or f"{asset_type.title()}-{aid}".strip("-")
+    )
+    subtype = raw.get("type") or raw.get("subtype") or raw.get("category") or ""
+    lat, lon = _extract_lat_lon(raw)
+    created = raw.get("created") or raw.get("date_created") or raw.get("timestamp") or ""
+    updated = raw.get("updated") or raw.get("modified") or raw.get("last_updated") or ""
+    last_activity = (
+        raw.get("last_activity")
+        or raw.get("last_image")
+        or raw.get("last_check_in")
+        or raw.get("last_seen")
+        or ""
+    )
+
+    # Owner email heuristics
+    owner_email = ""
+    for key in ("owner", "user", "profile"):
+        val = raw.get(key)
+        if isinstance(val, dict):
+            candidate = val.get("email") or val.get("username")
+            if candidate:
+                owner_email = str(candidate).strip()
+                break
+    visibility = raw.get("public")
+    if visibility is None:
+        visibility = raw.get("shared")
+    if isinstance(visibility, bool):
+        visibility = "public" if visibility else "private"
+    else:
+        visibility = str(visibility or "")
+
+    return {
+        "huntarea_id": huntarea_id,
+        "huntarea_name": huntarea_name,
+        "asset_type": asset_type,
+        "asset_id": aid,
+        "name": str(name)[:200],
+        "subtype": str(subtype or "")[:100],
+        "latitude": lat,
+        "longitude": lon,
+        "created": str(created),
+        "updated": str(updated),
+        "last_activity": str(last_activity),
+        "owner_email": owner_email,
+        "visibility": visibility,
+    }
+
+
+def fetch_assets_for_area(session: Session, hunt_id: Any, huntarea_name: str) -> list[dict[str, Any]]:
+    """Attempt to fetch assets (stands, cameras, generic) for a hunt area.
+
+    Iterates over candidate endpoints. Each successful response aggregated.
+    Returns a list of normalized asset dicts.
+    """
+    if not is_safe_id(hunt_id):
+        logger.error("Unsafe hunt_id provided to fetch_assets_for_area: %r", hunt_id)
+        return []
+    assets: list[dict[str, Any]] = []
+    for atype, url_tmpl in ACTIVE_ASSET_ENDPOINTS:
+        url = url_tmpl.format(hunt_id)
+        try:
+            r = session.get(url, timeout=15)
+            if r.status_code >= 400:
+                logger.debug("Asset endpoint %s returned %s; skipping", url, r.status_code)
+                continue
+            data = r.json()
+            if isinstance(data, dict) and "objects" in data and isinstance(data["objects"], list):
+                raw_list = data["objects"]
+            elif isinstance(data, list):
+                raw_list = data
+            else:
+                raw_list = []
+            for raw in raw_list:
+                if isinstance(raw, dict):
+                    assets.append(_normalize_asset(raw, atype, hunt_id, huntarea_name))
+        except Exception as e:
+            logger.debug("Asset fetch failed for %s: %s", url, e)
+            continue
+    return assets
+
+
+def refine_active_asset_endpoints(session: Session, sample_hunt_id: Any) -> None:
+    """Probe asset endpoints with a single huntarea id and keep only those returning usable JSON.
+
+    Usable JSON means a list or a dict containing an 'objects' list. Errors / non-JSON responses are discarded.
+    This reduces unnecessary calls for later hunt areas.
+    """
+    global ACTIVE_ASSET_ENDPOINTS
+    if not is_safe_id(sample_hunt_id):
+        logger.debug("Skipping asset endpoint refinement; sample hunt id unsafe: %r", sample_hunt_id)
+        return
+    kept: list[tuple[str, str]] = []
+    for atype, url_tmpl in ACTIVE_ASSET_ENDPOINTS:
+        url = url_tmpl.format(sample_hunt_id)
+        try:
+            r = session.get(url, timeout=10)
+            if r.status_code >= 400:
+                logger.debug("Endpoint probe %s (%s) -> %s; dropping", atype, url, r.status_code)
+                continue
+            data = r.json()
+            usable = False
+            if isinstance(data, list):
+                usable = True
+            elif isinstance(data, dict) and isinstance(data.get("objects"), list):
+                usable = True
+            if usable:
+                kept.append((atype, url_tmpl))
+                logger.debug("Endpoint kept for assets: %s (%s)", atype, url)
+            else:
+                logger.debug("Endpoint returned unusable JSON shape; dropping: %s (%s) -> keys=%s", atype, url, list(data.keys()) if isinstance(data, dict) else type(data))
+        except Exception as e:
+            logger.debug("Asset endpoint probe failed (%s %s): %s", atype, url, e)
+            continue
+    if kept:
+        ACTIVE_ASSET_ENDPOINTS = kept
+        logger.info("Dynamic asset endpoints refined. Active count: %d", len(ACTIVE_ASSET_ENDPOINTS))
+    else:
+        logger.info("Dynamic asset refinement yielded no usable endpoints; retaining original list (%d).", len(ACTIVE_ASSET_ENDPOINTS))
+
+
+def _clone_session(parent: Session) -> Session:
+    """Create a shallow clone of a Session for thread use (cookies + headers)."""
+    child = make_session_with_retries()
+    child.headers.update(parent.headers)
+    for c in parent.cookies:
+        child.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
+    # Copy TLS verification setting
+    child.verify = parent.verify
+    return child
+
+
+def process_hunt_area(session: Session, club: dict[str, Any], include_assets: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Collect data for a single hunt area.
+
+    Returns (member_rows, asset_rows, summary_entry)
+    """
+    huntarea_obj = club.get("huntarea") if isinstance(club.get("huntarea"), dict) else None
+    hid = club.get("huntarea_id") or club.get("id") or (huntarea_obj.get("id") if isinstance(huntarea_obj, dict) else None)
+    hmeta = huntarea_obj or as_dict(club)
+    hunt_name = (
+        (hmeta.get("name") if isinstance(hmeta, dict) else None)
+        or club.get("name")
+        or (f"Area-{hid}" if hid is not None else "Area-Unknown")
+    )
+    if hid is None:
+        return [], [], {}
+    logger.info("Processing huntarea: %s (id=%s)", hunt_name, hid)
+    members = fetch_members_for_area(session, hid)
+    members_list = json_or_list_to_objects(members) if members is not None else []
+    invites = fetch_invites_for_area(session, hid) or []
+    reqs = fetch_requests_for_area(session, hid) or []
+    rows: list[dict[str, Any]] = []
+    for m in members_list:
+        member_first_name = m.get("first_name", "").strip()
+        member_last_name = m.get("last_name", "").strip()
+        member_name = f"{member_first_name} {member_last_name}".strip()
+        member_email = m.get("email", "").strip()
+        rows.append({
+            "huntarea_id": hid,
+            "huntarea_name": hunt_name,
+            "name": member_name,
+            "email": member_email,
+            "rank": "member",
+            "status": "active",
+            "date_joined": "",
+        })
+    for inv in invites:
+        invite_name = inv.get("name") or inv.get("full_name") or ""
+        invite_email = (inv.get("email") or "").strip()
+        rank_obj = inv.get("rank")
+        if isinstance(rank_obj, dict):
+            invite_rank = rank_obj.get("name") or rank_obj.get("title") or ""
+        else:
+            invite_rank = str(rank_obj or "")
+        if not invite_rank:
+            invite_rank = inv.get("role") or inv.get("intended_rank") or ""
+        invite_date = inv.get("date_joined") or inv.get("created") or inv.get("date_sent") or ""
+        rows.append({
+            "huntarea_id": hid,
+            "huntarea_name": hunt_name,
+            "name": invite_name.strip(),
+            "email": invite_email,
+            "rank": invite_rank.strip(),
+            "status": "invited",
+            "date_joined": invite_date,
+        })
+    for rq in reqs:
+        rq = as_dict(rq)
+        profile = as_dict(rq.get("profile", {}))
+        user_data = as_dict(profile.get("user", {}))
+        first_name = (profile.get("first_name") or user_data.get("first_name") or "").strip()
+        last_name = (profile.get("last_name") or user_data.get("last_name") or "").strip()
+        username = (profile.get("username") or user_data.get("username") or "").strip()
+        request_name = f"{first_name} {last_name}".strip() if first_name or last_name else username
+        request_email = profile.get("email", "").strip() or user_data.get("email", "").strip()
+        rank_obj = rq.get("rank", {})
+        request_rank = rank_obj.get("name", "").strip() if isinstance(rank_obj, dict) else ""
+        request_date = rq.get("date_requested", "")
+        if not request_name and not request_email:
+            profile_id = profile.get("id", "") or user_data.get("id", "")
+            if profile_id:
+                request_name = f"Profile_{profile_id}" if profile.get("id") else f"User_{profile_id}"
+        rows.append({
+            "huntarea_id": hid,
+            "huntarea_name": hunt_name,
+            "name": request_name,
+            "email": request_email,
+            "rank": request_rank,
+            "status": "requested",
+            "date_joined": request_date,
+        })
+    assets_for_area: list[dict[str, Any]] = []
+    if include_assets:
+        try:
+            assets_for_area = fetch_assets_for_area(session, hid, hunt_name)
+        except Exception as e:
+            logger.debug("Asset collection failed for %s: %s", hid, e)
+    summary_entry = {
+        "id": hid,
+        "name": hunt_name,
+        "meta": hmeta,
+        "counts": {
+            "members": len(members_list),
+            "invites": len(invites),
+            "requests": len(reqs),
+            **({"assets": len(assets_for_area)} if include_assets else {}),
+        },
+        "members_sample": members_list[:10],
+        "invites_sample": invites[:10],
+        "requests_sample": reqs[:10],
+        **({"assets_sample": assets_for_area[:10]} if include_assets else {}),
+    }
+    return rows, assets_for_area, summary_entry
+
+
 def write_per_hunt_csvs(all_rows: list[dict[str, Any]]) -> None:
     """Write individual CSV files per hunt area."""
     os.makedirs(OUT_PER_HUNT_DIR, exist_ok=True)
@@ -495,6 +817,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--per-hunt", action="store_true", help="Also write per-hunt CSV files (timestamped directory)")
     ap.add_argument("--no-login-fallback", action="store_true", help="Do not attempt login; require cookies")
     ap.add_argument("--dry-run", action="store_true", help="Show planned output paths and exit without network or file writes")
+    ap.add_argument("--include-assets", action="store_true", help="Also fetch stands/cameras/other assets and write assets CSV + include in summary")
+    ap.add_argument("--assets-extra", nargs="*", help="Additional asset endpoint specs type:urlTemplate (e.g. feeder:https://.../feeder/?huntarea_id={})", default=None)
+    ap.add_argument("--dynamic-assets", action="store_true", help="Probe asset endpoints with first hunt area and keep only those returning usable JSON")
+    ap.add_argument("--parallel", action="store_true", help="Fetch hunt areas in parallel (members/invites/requests/assets)")
+    ap.add_argument("--parallel-workers", type=int, default=int(os.getenv("HUNTSTAND_PARALLEL_WORKERS", "4")), help="Worker threads for parallel fetch (default 4)")
     ap.add_argument("--log-json", action="store_true", help="Emit structured JSON logs to stdout")
     ap.add_argument(
         "--output-dir",
@@ -520,6 +847,7 @@ def main(argv: list[str] | None = None) -> int:
 
     out_csv = str(base_dir / f"huntstand_members_detailed_{ts}.csv")
     out_json = str(base_dir / f"huntstand_summary_{ts}.json")
+    out_assets = str(base_dir / f"huntstand_assets_detailed_{ts}.csv") if args.include_assets else None
     out_matrix = str(base_dir / f"huntstand_membership_matrix_{ts}.csv")
     if args.per_hunt:
         import importlib
@@ -531,6 +859,8 @@ def main(argv: list[str] | None = None) -> int:
         debug_paths.append(out_matrix)
         if args.per_hunt:
             debug_paths.append(str(OUT_PER_HUNT_DIR))
+        if out_assets:
+            debug_paths.append(out_assets)
     if args.format in ("all", "json"):
         debug_paths.append(out_json)
     logger.debug(
@@ -546,6 +876,8 @@ def main(argv: list[str] | None = None) -> int:
         planned.append(out_matrix)
         if args.per_hunt:
             planned.append(str(OUT_PER_HUNT_DIR))
+        if out_assets:
+            planned.append(out_assets)
     if args.format in ("all", "json"):
         planned.append(out_json)
 
@@ -632,171 +964,56 @@ def main(argv: list[str] | None = None) -> int:
 
     all_rows: list[dict[str, Any]] = []
     summary: dict[str, Any] = {"hunt_areas": []}
+    all_assets: list[dict[str, Any]] = []
 
-    for club in normalized_clubs:
-        # SAFEGUARDS: Never call .get on a non-dict
-        huntarea_obj = club.get("huntarea") if isinstance(club.get("huntarea"), dict) else None
-
-        hid = (
-            club.get("huntarea_id")
-            or club.get("id")
-            or (huntarea_obj.get("id") if isinstance(huntarea_obj, dict) else None)
+    # Dynamic asset endpoint refinement (first hunt area only)
+    if args.include_assets and args.dynamic_assets and normalized_clubs:
+        first_club = normalized_clubs[0]
+        sample_id = first_club.get("huntarea_id") or first_club.get("id") or (
+            first_club.get("huntarea", {}).get("id") if isinstance(first_club.get("huntarea"), dict) else None
         )
-        hmeta = huntarea_obj or as_dict(club)
-        hunt_name = (
-            (hmeta.get("name") if isinstance(hmeta, dict) else None)
-            or club.get("name")
-            or (f"Area-{hid}" if hid is not None else "Area-Unknown")
-        )
+        if sample_id:
+            refine_active_asset_endpoints(session, sample_id)
 
-        if hid is None:
-            logger.debug("Skipping club without huntarea_id: %s", club)
-            continue
+    if args.assets_extra:
+        for spec in args.assets_extra:
+            if ":" not in spec:
+                logger.warning("Ignoring malformed assets-extra spec (missing colon): %s", spec)
+                continue
+            atype, urltmpl = spec.split(":", 1)
+            atype = atype.strip()
+            urltmpl = urltmpl.strip()
+            if atype and urltmpl:
+                ACTIVE_ASSET_ENDPOINTS.append((atype, urltmpl))
+                logger.info("Added extra asset endpoint: %s -> %s", atype, urltmpl)
 
-        hname = hunt_name
-        logger.info("Processing huntarea: %s (id=%s)", hname, hid)
+    if args.parallel and len(normalized_clubs) > 1:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        workers = max(1, args.parallel_workers)
+        logger.info("Parallel fetch enabled (%d workers)", workers)
+        # Use separate sessions per thread for safety
 
-        # members
-        members = fetch_members_for_area(session, hid)
-        members_list = json_or_list_to_objects(members) if members is not None else []
-
-        # invites
-        invites = fetch_invites_for_area(session, hid) or []
-
-        # requests
-        reqs = fetch_requests_for_area(session, hid) or []
-
-        # Active members
-        for m in members_list:
-            # Extract member details based on actual API structure
-            member_first_name = m.get("first_name", "").strip()
-            member_last_name = m.get("last_name", "").strip()
-            member_name = f"{member_first_name} {member_last_name}".strip()
-            member_email = m.get("email", "").strip()
-
-            # Members don't have rank info in this endpoint - we'll need to get it differently
-            # For now, we'll set it as "member" (default) since they're active members
-            member_rank = "member"  # Default for active members
-
-            # Members don't seem to have join dates in this endpoint either
-            member_date_joined = ""
-
-            all_rows.append(
-                {
-                    "huntarea_id": hid,
-                    "huntarea_name": hname,
-                    "name": member_name,
-                    "email": member_email,
-                    "rank": member_rank,
-                    "status": "active",
-                    "date_joined": member_date_joined,
-                }
-            )
-
-        # Invites
-        for inv in invites:
-            logger.debug(
-                "Processing invite: %s",
-                json.dumps(inv, indent=2)[:500] + "..." if len(str(inv)) > 500 else json.dumps(inv, indent=2),
-            )
-
-            # Extract invite details
-            invite_name = inv.get("name") or inv.get("full_name") or ""
-            invite_email = (inv.get("email") or "").strip()
-
-            # Extract rank for invite
-            rank_obj = inv.get("rank")
-            if isinstance(rank_obj, dict):
-                invite_rank = rank_obj.get("name") or rank_obj.get("title") or ""
-            else:
-                invite_rank = str(rank_obj or "")
-
-            # Also check for role field
-            if not invite_rank:
-                invite_rank = inv.get("role") or inv.get("intended_rank") or ""
-
-            # Extract date
-            invite_date = inv.get("date_joined") or inv.get("created") or inv.get("date_sent") or ""
-
-            all_rows.append(
-                {
-                    "huntarea_id": hid,
-                    "huntarea_name": hname,
-                    "name": invite_name.strip(),
-                    "email": invite_email,
-                    "rank": invite_rank.strip(),
-                    "status": "invited",
-                    "date_joined": invite_date,
-                }
-            )
-
-        # Requests (people requesting to join)
-        for rq in reqs:
-            rq = as_dict(rq)
-
-            # Extract requester details from the profile object
-            profile = as_dict(rq.get("profile", {}))
-            user_data = as_dict(profile.get("user", {}))
-
-            # Get name from profile - try various fields
-            profile_first_name = profile.get("first_name", "").strip() if profile.get("first_name") else ""
-            profile_last_name = profile.get("last_name", "").strip() if profile.get("last_name") else ""
-            profile_username = profile.get("username", "").strip() if profile.get("username") else ""
-
-            # Also try user data
-            user_first_name = user_data.get("first_name", "").strip() if user_data.get("first_name") else ""
-            user_last_name = user_data.get("last_name", "").strip() if user_data.get("last_name") else ""
-            user_username = user_data.get("username", "").strip() if user_data.get("username") else ""
-
-            # Try to construct name from various sources
-            first_name = profile_first_name or user_first_name
-            last_name = profile_last_name or user_last_name
-            username = profile_username or user_username
-
-            request_name = f"{first_name} {last_name}".strip() if first_name or last_name else username
-
-            # Get email from multiple sources
-            request_email = profile.get("email", "").strip() or user_data.get("email", "").strip()
-
-            # Get rank if available (some requests might have intended rank)
-            rank_obj = rq.get("rank", {})
-            request_rank = rank_obj.get("name", "").strip() if isinstance(rank_obj, dict) else ""
-
-            # Extract request date
-            request_date = rq.get("date_requested", "")
-
-            # If still no identifiable info, use profile/user IDs
-            if not request_name and not request_email:
-                profile_id = profile.get("id", "")
-                user_id = user_data.get("id", "")
-                if profile_id:
-                    request_name = f"Profile_{profile_id}"
-                elif user_id:
-                    request_name = f"User_{user_id}"
-
-            all_rows.append(
-                {
-                    "huntarea_id": hid,
-                    "huntarea_name": hname,
-                    "name": request_name,
-                    "email": request_email,
-                    "rank": request_rank,
-                    "status": "requested",
-                    "date_joined": request_date,
-                }
-            )
-
-        summary["hunt_areas"].append(
-            {
-                "id": hid,
-                "name": hname,
-                "meta": hmeta,
-                "counts": {"members": len(members_list), "invites": len(invites), "requests": len(reqs)},
-                "members_sample": members_list[:10],
-                "invites_sample": invites[:10],
-                "requests_sample": reqs[:10],
-            }
-        )
+        def submit_club(executor, club):
+            thread_session = _clone_session(session)
+            return executor.submit(process_hunt_area, thread_session, club, args.include_assets)
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = [submit_club(ex, club) for club in normalized_clubs]
+            for fut in as_completed(futures):
+                try:
+                    rows, assets_for_area, summary_entry = fut.result()
+                    if summary_entry:
+                        summary["hunt_areas"].append(summary_entry)
+                    all_rows.extend(rows)
+                    all_assets.extend(assets_for_area)
+                except Exception as e:
+                    logger.error("Parallel worker failed: %s", e)
+    else:
+        for club in normalized_clubs:
+            rows, assets_for_area, summary_entry = process_hunt_area(session, club, args.include_assets)
+            if summary_entry:
+                summary["hunt_areas"].append(summary_entry)
+            all_rows.extend(rows)
+            all_assets.extend(assets_for_area)
 
     # write outputs (filtered by --format)
     generated: list[str] = []
@@ -812,6 +1029,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.per_hunt:
             write_per_hunt_csvs(all_rows)
             generated.append(str(OUT_PER_HUNT_DIR))
+        if args.include_assets and out_assets is not None:
+            write_assets_csv(all_assets, out_path=out_assets)
+            generated.append(out_assets)
 
     logger.info(
         "All done. Outputs generated (%s):\n%s", args.format, "\n".join(f" - {g}" for g in generated)

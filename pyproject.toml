@@ -1,6 +1,6 @@
 [project]
 name = "huntstand-exporter"
-version = "0.3.0"
+version = "0.3.2"
 description = "CLI tool to export HuntStand hunt area membership data (members, invites, requests) to CSV/JSON."
 authors = [ { name = "Anthony Pinto" } ]
 license = { file = "LICENSE" }

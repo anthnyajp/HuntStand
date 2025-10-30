@@ -1,0 +1,6 @@
+email,huntarea_id,role,status_code,response
+john.doe@example.com,7308893,member,200,{"success": true}
+jane.smith@example.com,7308893,member,200,{"success": true}
+admin@example.com,7308893,admin,200,{"success": true}
+viewer@example.com,7308911,view,200,{"success": true}
+failed@example.com,7308911,member,400,{"error": "Invalid email"}
