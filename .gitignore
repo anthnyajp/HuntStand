@@ -26,11 +26,20 @@ build/
 dist/
 huntstand_har.txt
 
+# Cache directories
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
 # Outputs (generated data)
 huntstand_members_detailed.csv
 huntstand_membership_matrix.csv
 huntstand_summary.json
 huntstand_per_hunt_csvs/
+/exports/
+
+# Wheel files (use dist/ or install from PyPI)
+*.whl
 
 # Test / Coverage
 .coverage

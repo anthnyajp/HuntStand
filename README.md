@@ -25,12 +25,12 @@ A CLI tool that exports HuntStand hunt area membership data (active members, inv
 
 Bulk invite/add emails to hunt areas using CSV input files.
 
-Input CSV files (single-column, header optional):
+Input CSV files (single-column, header optional) located in `import/` directory:
 
-- `members.csv` — standard member emails
-- `admin.csv` — admin emails
-- `view_only.csv` — view-only emails
-- `huntareas.csv` — hunt area IDs (numeric or UUID-like)
+- `import/members.csv` — standard member emails
+- `import/admin.csv` — admin emails
+- `import/view_only.csv` — view-only emails
+- `import/huntareas.csv` — hunt area IDs (numeric or UUID-like)
 
 Basic usage:
 
@@ -49,10 +49,10 @@ CLI options (`huntstand-add-members`):
 
 ```text
 --cookies-file <path>     JSON file with sessionid/csrftoken (overridden by env)
---members-file <path>     Members emails CSV (default members.csv)
---admin-file <path>       Admin emails CSV (default admin.csv)
---view-file <path>        View-only emails CSV (default view_only.csv)
---huntareas-file <path>   Hunt area IDs CSV (default huntareas.csv)
+--members-file <path>     Members emails CSV (default import/members.csv)
+--admin-file <path>       Admin emails CSV (default import/admin.csv)
+--view-file <path>        View-only emails CSV (default import/view_only.csv)
+--huntareas-file <path>   Hunt area IDs CSV (default import/huntareas.csv)
 --roles <list>            Subset of roles to import (member/admin/view); default member
 --dry-run                 Show planned additions and exit (no network)
 --verify-results <csv>    Verify previous additions from results CSV file
@@ -297,7 +297,7 @@ Interact responsibly with HuntStand's private web APIs:
 
 ## Contributing Guidelines
 
-See `CONTRIBUTING.md` for guidelines.
+See `docs/CONTRIBUTING.md` for guidelines.
 
 ## Deprecations & Removals
 
